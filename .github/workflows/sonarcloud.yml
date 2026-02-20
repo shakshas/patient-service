@@ -63,12 +63,15 @@ jobs:
           path: reports/
 
   # ─────────────────────────────────────────
-  # Job 3: Docker Build, Trivy Scan & Push to all 3 ACRs
+  # Job 3: Docker Build & Trivy Scan (local only)
   # ─────────────────────────────────────────
   docker-build:
-    name: Docker Build, Scan & Push
+    name: Docker Build & Trivy Scan
     runs-on: ubuntu-latest
     needs: owasp
+    outputs:
+      image_tag: ${{ steps.tags.outputs.image_tag }}
+      short_sha: ${{ steps.tags.outputs.short_sha }}
 
     steps:
       - name: Checkout code
@@ -84,11 +87,8 @@ jobs:
           DATE=$(date +'%Y%m%d')
           BRANCH=$(echo ${{ github.ref_name }} | sed 's/[^a-zA-Z0-9._-]/-/g')
           echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "date=${DATE}" >> $GITHUB_OUTPUT
-          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
           echo "image_tag=${BRANCH}-${DATE}-${SHORT_SHA}" >> $GITHUB_OUTPUT
 
-      # Step 1 - Build locally
       - name: Build Docker image (local only)
         uses: docker/build-push-action@v5
         with:
@@ -99,7 +99,6 @@ jobs:
           load: true
           tags: patient-service:${{ steps.tags.outputs.image_tag }}
 
-      # Step 2 - Trivy scan (report only, won't fail)
       - name: Trivy Image Scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -109,80 +108,11 @@ jobs:
           ignore-unfixed: true
           severity: CRITICAL,HIGH
 
-      # Step 3 - Push to DEV ACR
-      - name: Log in to DEV ACR
-        if: ${{ github.ref == 'refs/heads/main' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.DEV_ACR_LOGIN_SERVER }}
-          username: ${{ secrets.DEV_ACR_USERNAME }}
-          password: ${{ secrets.DEV_ACR_PASSWORD }}
-
-      - name: Push to DEV ACR
-        if: ${{ github.ref == 'refs/heads/main' }}
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          target: production
-          no-cache: true
-          push: true
-          tags: |
-            ${{ secrets.DEV_ACR_LOGIN_SERVER }}/patient-service:latest
-            ${{ secrets.DEV_ACR_LOGIN_SERVER }}/patient-service:${{ steps.tags.outputs.short_sha }}
-            ${{ secrets.DEV_ACR_LOGIN_SERVER }}/patient-service:${{ steps.tags.outputs.image_tag }}
-
-      # Step 4 - Push to STAGING ACR
-      - name: Log in to STAGING ACR
-        if: ${{ github.ref == 'refs/heads/main' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.STAGING_ACR_LOGIN_SERVER }}
-          username: ${{ secrets.STAGING_ACR_USERNAME }}
-          password: ${{ secrets.STAGING_ACR_PASSWORD }}
-
-      - name: Push to STAGING ACR
-        if: ${{ github.ref == 'refs/heads/main' }}
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          target: production
-          no-cache: true
-          push: true
-          tags: |
-            ${{ secrets.STAGING_ACR_LOGIN_SERVER }}/patient-service:latest
-            ${{ secrets.STAGING_ACR_LOGIN_SERVER }}/patient-service:${{ steps.tags.outputs.short_sha }}
-            ${{ secrets.STAGING_ACR_LOGIN_SERVER }}/patient-service:${{ steps.tags.outputs.image_tag }}
-
-      # Step 5 - Push to PROD ACR
-      - name: Log in to PROD ACR
-        if: ${{ github.ref == 'refs/heads/main' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.PROD_ACR_LOGIN_SERVER }}
-          username: ${{ secrets.PROD_ACR_USERNAME }}
-          password: ${{ secrets.PROD_ACR_PASSWORD }}
-
-      - name: Push to PROD ACR
-        if: ${{ github.ref == 'refs/heads/main' }}
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          target: production
-          no-cache: true
-          push: true
-          tags: |
-            ${{ secrets.PROD_ACR_LOGIN_SERVER }}/patient-service:latest
-            ${{ secrets.PROD_ACR_LOGIN_SERVER }}/patient-service:${{ steps.tags.outputs.short_sha }}
-            ${{ secrets.PROD_ACR_LOGIN_SERVER }}/patient-service:${{ steps.tags.outputs.image_tag }}
-
   # ─────────────────────────────────────────
-  # Job 4: Deploy to DEV (Automatic)
+  # Job 4: Push to DEV ACR → Deploy to DEV (Automatic)
   # ─────────────────────────────────────────
   deploy-dev:
-    name: Deploy to DEV
+    name: Push to DEV ACR & Deploy to DEV
     runs-on: ubuntu-latest
     needs: docker-build
     if: ${{ github.ref == 'refs/heads/main' }}
@@ -192,13 +122,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set image tag
-        id: tags
-        run: |
-          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          DATE=$(date +'%Y%m%d')
-          BRANCH=$(echo ${{ github.ref_name }} | sed 's/[^a-zA-Z0-9._-]/-/g')
-          echo "image_tag=${BRANCH}-${DATE}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to DEV ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.DEV_ACR_LOGIN_SERVER }}
+          username: ${{ secrets.DEV_ACR_USERNAME }}
+          password: ${{ secrets.DEV_ACR_PASSWORD }}
+
+      - name: Push to DEV ACR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          no-cache: true
+          push: true
+          tags: |
+            ${{ secrets.DEV_ACR_LOGIN_SERVER }}/patient-service:latest
+            ${{ secrets.DEV_ACR_LOGIN_SERVER }}/patient-service:${{ needs.docker-build.outputs.short_sha }}
+            ${{ secrets.DEV_ACR_LOGIN_SERVER }}/patient-service:${{ needs.docker-build.outputs.image_tag }}
 
       - name: Azure Login
         uses: azure/login@v2
@@ -218,7 +163,7 @@ jobs:
 
       - name: Inject image tag into deployment
         run: |
-          sed -i 's|PLACEHOLDER|${{ secrets.DEV_ACR_LOGIN_SERVER }}/patient-service:${{ steps.tags.outputs.image_tag }}|g' k8s/dev/deployment.yaml
+          sed -i 's|PLACEHOLDER|${{ secrets.DEV_ACR_LOGIN_SERVER }}/patient-service:${{ needs.docker-build.outputs.image_tag }}|g' k8s/dev/deployment.yaml
 
       - name: Deploy to DEV AKS
         run: |
@@ -227,26 +172,41 @@ jobs:
           kubectl rollout status deployment/patient-service --namespace=dev
 
   # ─────────────────────────────────────────
-  # Job 5: Deploy to STAGING (1 Approval)
+  # Job 5: Push to STAGING ACR → Deploy to STAGING (1 Approval)
   # ─────────────────────────────────────────
   deploy-staging:
-    name: Deploy to STAGING
+    name: Push to STAGING ACR & Deploy to STAGING
     runs-on: ubuntu-latest
-    needs: deploy-dev
+    needs: [docker-build, deploy-dev]
     if: ${{ github.ref == 'refs/heads/main' }}
-    environment: staging
+    environment: staging  # 1 required reviewer → approval happens before this job runs
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set image tag
-        id: tags
-        run: |
-          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          DATE=$(date +'%Y%m%d')
-          BRANCH=$(echo ${{ github.ref_name }} | sed 's/[^a-zA-Z0-9._-]/-/g')
-          echo "image_tag=${BRANCH}-${DATE}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to STAGING ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.STAGING_ACR_LOGIN_SERVER }}
+          username: ${{ secrets.STAGING_ACR_USERNAME }}
+          password: ${{ secrets.STAGING_ACR_PASSWORD }}
+
+      - name: Push to STAGING ACR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          no-cache: true
+          push: true
+          tags: |
+            ${{ secrets.STAGING_ACR_LOGIN_SERVER }}/patient-service:latest
+            ${{ secrets.STAGING_ACR_LOGIN_SERVER }}/patient-service:${{ needs.docker-build.outputs.short_sha }}
+            ${{ secrets.STAGING_ACR_LOGIN_SERVER }}/patient-service:${{ needs.docker-build.outputs.image_tag }}
 
       - name: Azure Login
         uses: azure/login@v2
@@ -266,7 +226,7 @@ jobs:
 
       - name: Inject image tag into deployment
         run: |
-          sed -i 's|PLACEHOLDER|${{ secrets.STAGING_ACR_LOGIN_SERVER }}/patient-service:${{ steps.tags.outputs.image_tag }}|g' k8s/staging/deployment.yaml
+          sed -i 's|PLACEHOLDER|${{ secrets.STAGING_ACR_LOGIN_SERVER }}/patient-service:${{ needs.docker-build.outputs.image_tag }}|g' k8s/staging/deployment.yaml
 
       - name: Deploy to STAGING AKS
         run: |
@@ -275,26 +235,41 @@ jobs:
           kubectl rollout status deployment/patient-service --namespace=staging
 
   # ─────────────────────────────────────────
-  # Job 6: Deploy to PROD (2 Approvals)
+  # Job 6: Push to PROD ACR → Deploy to PROD (2 Approvals)
   # ─────────────────────────────────────────
   deploy-prod:
-    name: Deploy to PROD
+    name: Push to PROD ACR & Deploy to PROD
     runs-on: ubuntu-latest
-    needs: deploy-staging
+    needs: [docker-build, deploy-staging]
     if: ${{ github.ref == 'refs/heads/main' }}
-    environment: prod
+    environment: prod  # 2 required reviewers → approval happens before this job runs
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set image tag
-        id: tags
-        run: |
-          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          DATE=$(date +'%Y%m%d')
-          BRANCH=$(echo ${{ github.ref_name }} | sed 's/[^a-zA-Z0-9._-]/-/g')
-          echo "image_tag=${BRANCH}-${DATE}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to PROD ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.PROD_ACR_LOGIN_SERVER }}
+          username: ${{ secrets.PROD_ACR_USERNAME }}
+          password: ${{ secrets.PROD_ACR_PASSWORD }}
+
+      - name: Push to PROD ACR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          no-cache: true
+          push: true
+          tags: |
+            ${{ secrets.PROD_ACR_LOGIN_SERVER }}/patient-service:latest
+            ${{ secrets.PROD_ACR_LOGIN_SERVER }}/patient-service:${{ needs.docker-build.outputs.short_sha }}
+            ${{ secrets.PROD_ACR_LOGIN_SERVER }}/patient-service:${{ needs.docker-build.outputs.image_tag }}
 
       - name: Azure Login
         uses: azure/login@v2
@@ -314,7 +289,7 @@ jobs:
 
       - name: Inject image tag into deployment
         run: |
-          sed -i 's|PLACEHOLDER|${{ secrets.PROD_ACR_LOGIN_SERVER }}/patient-service:${{ steps.tags.outputs.image_tag }}|g' k8s/prod/deployment.yaml
+          sed -i 's|PLACEHOLDER|${{ secrets.PROD_ACR_LOGIN_SERVER }}/patient-service:${{ needs.docker-build.outputs.image_tag }}|g' k8s/prod/deployment.yaml
 
       - name: Deploy to PROD AKS
         run: |
