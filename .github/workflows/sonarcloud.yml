@@ -8,6 +8,7 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
+  id-token: write   # Required for OIDC Azure Login
   contents: read
 
 jobs:
