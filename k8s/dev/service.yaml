@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: patient-service
+  namespace: dev
+  labels:
+    app: patient-service
+    env: dev
+spec:
+  type: ClusterIP
+  selector:
+    app: patient-service
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
