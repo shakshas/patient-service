@@ -24,10 +24,43 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+  owasp:
+    name: OWASP Dependency Check
+    runs-on: ubuntu-latest
+    needs: sonarqube
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'patient-service'
+          path: '.'
+          format: 'HTML'
+          out: 'reports'
+          args: --failOnCVSS 11  # Score of 11 is impossible so it never fails
+
+      - name: Upload OWASP Report
+        uses: actions/upload-artifact@v4
+        if: always()  # Always upload report even if scan finds issues
+        with:
+          name: owasp-report
+          path: reports/
+
   docker-build:
     name: Docker Build, Scan & Push
     runs-on: ubuntu-latest
-    needs: sonarqube
+    needs: owasp  # Runs after OWASP check
 
     steps:
       - name: Checkout code
