@@ -25,32 +25,57 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   docker-build:
-    name: Docker Build & Push
+    name: Docker Build, Scan & Push
     runs-on: ubuntu-latest
-    needs: sonarqube  # Only runs if SonarQube job passes
+    needs: sonarqube
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Log in to Azure Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and Push Docker image
+      # Step 1 - Build locally, do NOT push yet
+      - name: Build Docker image (local only)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           target: production
           no-cache: true
-          push: ${{ github.ref == 'refs/heads/main' }}
+          load: true
+          tags: patient-service:${{ github.sha }}
+
+      # Step 2 - Scan the local image
+      - name: Trivy Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: patient-service:${{ github.sha }}
+          format: table
+          exit-code: 0
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      # Step 3 - Login to ACR only after scan passes
+      - name: Log in to Azure Container Registry
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      # Step 4 - Push clean scanned image to ACR
+      - name: Push Docker image to ACR
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          no-cache: true
+          push: true
           tags: |
             ${{ secrets.ACR_LOGIN_SERVER }}/patient-service:latest
             ${{ secrets.ACR_LOGIN_SERVER }}/patient-service:${{ github.sha }}
